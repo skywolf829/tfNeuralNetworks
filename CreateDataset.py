@@ -8,8 +8,8 @@ class ASLDataset:
     def _parse_function(self, filename, label):
         image_string = tf.read_file(filename)
         image_decoded = tf.image.decode_image(image_string, channels = 3)
-        image_resized = tf.image.resize_image_with_crop_or_pad(image_decoded, 28, 28)
-        image_resized = tf.reshape(image_resized, [28 * 28 * 3])
+        image_resized = tf.image.resize_image_with_crop_or_pad(image_decoded, 200, 200)
+        image_resized = tf.reshape(image_resized, [200 * 200 * 3])
         return image_resized, label
 
     def size(self):

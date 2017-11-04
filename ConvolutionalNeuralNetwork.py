@@ -5,22 +5,23 @@ from os import listdir
 from os.path import isfile, join
 import sys
 
-def weight_variable(shape):
+def weight_variable(shape, n):
     initial = tf.truncated_normal(shape, stddev=0.1)
-    return tf.Variable(initial)
-def bias_variable(shape):
+    return tf.Variable(initial, name=n)
+def bias_variable(shape, n):
     initial = tf.constant(0.1, shape=shape)
-    return tf.Variable(initial)
+    return tf.Variable(initial, name=n)
 def conv2d(x, W):
     return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
 def max_pool_2x2(x, kSize):
     return tf.nn.max_pool(x, ksize=[1, kSize, kSize, 1], strides=[1, kSize, kSize, 1], padding='SAME')
 
 class ConvolutionalNeuralNetwork:
-    def __init__(self, imageWidth = 28, imageHeight = 28, filterWidth = 5,
-                 filterHeight = 5, channels = 3, outputs = 26, numEpochs = 5, batchSize = 50,
-                 learningRate = 0.001, filter1Size = 32, filter2Size = 64, lastLayerSize = 1024,
+    def __init__(self, path = None, file=None, imageWidth = 200, imageHeight = 200, filterWidth = 5,
+                 filterHeight = 5, channels = 3, outputs = 26, numEpochs = 300, batchSize = 50,
+                 learningRate = 0.0001, filter1Size = 32, filter2Size = 64, lastLayerSize = 1024,
                  kernelSize = 2):
+        self.sess = tf.InteractiveSession()
         self.numEpochs = numEpochs
         self.batchSize = batchSize
         self.learningRate = learningRate
@@ -36,20 +37,55 @@ class ConvolutionalNeuralNetwork:
         self.lastLayerSize = lastLayerSize
         self.kernelSize = kernelSize
 
-        self.x = tf.placeholder(tf.float32, shape=[None, self.inputs])
-        self.y = tf.placeholder(tf.float32, shape=[None, self.outputs])
-        self.keepProb = tf.placeholder(tf.float32)
-    
-        self.toLayer1 = {'weights':weight_variable([filterHeight, filterWidth, channels, filter1Size]),
-            'biases':bias_variable([filter1Size])}
-        self.toLayer2 = {'weights':weight_variable([filterHeight, filterWidth, filter1Size, filter2Size]),
-            'biases':bias_variable([filter2Size])}
-        self.toLayer3 = {'weights':weight_variable([int(imageHeight/(kernelSize ** 2)) *
-                                                    int(imageWidth/(kernelSize ** 2)) *
-                                                    filter2Size, 1024]),
-                         'biases':bias_variable([lastLayerSize])}
-        self.toLayer4 = {'weights':weight_variable([lastLayerSize, outputs]),
-            'biases':bias_variable([outputs])}
+        with tf.name_scope('input'):
+            self.x = tf.placeholder(tf.float32, shape=[None, self.inputs], name='x')
+            self.y = tf.placeholder(tf.float32, shape=[None, self.outputs], name='y')
+
+        self.keepProb = tf.placeholder(tf.float32, name='keepProb')
+
+        with tf.name_scope('Layer1'):
+            self.toLayer1 = {'weights':weight_variable([filterHeight, filterWidth, channels, filter1Size], 'W1'),
+                            'biases':bias_variable([filter1Size], 'B1')}
+
+        with tf.name_scope('Layer2'):
+            self.toLayer2 = {'weights':weight_variable([filterHeight, filterWidth, filter1Size, filter2Size], 'W2'),
+                            'biases':bias_variable([filter2Size], 'B2')}
+
+        with tf.name_scope('Layer3'):
+            self.toLayer3 = {'weights':weight_variable([int(imageHeight/(kernelSize ** 2)) *
+                                                        int(imageWidth/(kernelSize ** 2)) *
+                                                        filter2Size, lastLayerSize], 'W3'),
+                            'biases':bias_variable([lastLayerSize], 'B3')}
+
+        with tf.name_scope('Layer4'):
+            self.toLayer4 = {'weights':weight_variable([lastLayerSize, outputs], 'W4'),
+                            'biases':bias_variable([outputs], 'B4')}
+        
+        
+        self.prediction = self.feedForward(self.x)
+
+        with tf.name_scope('Cross_entropy'):
+            self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.y, logits=self.prediction))
+
+        with tf.name_scope('Train'):
+            self.optimizer = tf.train.AdamOptimizer(self.learningRate).minimize(self.cost)
+
+        with tf.name_scope('Accuracy'):
+            self.correct_prediction = tf.equal(tf.argmax(self.prediction, 1), tf.argmax(self.y, 1))
+            self.accuracy = tf.reduce_mean(tf.cast(self.correct_prediction, tf.float32))
+
+        # create a summary for our cost and accuracy
+        tf.summary.scalar("cost", self.cost)
+        tf.summary.scalar("accuracy", self.accuracy)
+
+        # merge all summaries into a single "operation" which we can execute in a session
+        self.merged = tf.summary.merge_all()
+
+        self.sess.run(tf.global_variables_initializer())
+        
+        if(path is not None and file is not None):
+            saver = tf.train.Saver()
+            saver.restore(self.sess, tf.train.latest_checkpoint(path))
 
     def feedForward(self,x):
         x_image = tf.reshape(x, [-1, self.imageHeight, self.imageWidth, self.channels])
@@ -78,37 +114,41 @@ class ConvolutionalNeuralNetwork:
         result = tf.matmul(fullyConnectedLayerReduced, self.toLayer4['weights'])
         result = tf.add(result, self.toLayer4['biases'])
         
+        
         return result
 
     def train(self):
-        prediction = self.feedForward(self.x)
-        
-        cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.y, logits=prediction))
-        optimizer = tf.train.AdamOptimizer(self.learningRate).minimize(cost)
-        
         ASL = CreateDataset.ASLDataset()
+        saver = tf.train.Saver(max_to_keep=1)
         
-        with tf.Session() as sess:
-            sess.run(tf.global_variables_initializer())
-            dataset = ASL.dataset
-            dataset = dataset.shuffle(buffer_size=10000)
-            dataset = dataset.batch(self.batchSize)
-            dataset = dataset.repeat(self.numEpochs)
-            iterator = dataset.make_initializable_iterator()
+        dataset = ASL.dataset
+        dataset = dataset.shuffle(buffer_size=10000)
+        dataset = dataset.batch(self.batchSize)
+        dataset = dataset.repeat(self.numEpochs)
+        iterator = dataset.make_initializable_iterator()
             
-            for i in range(self.numEpochs):
-                sess.run(iterator.initializer)
-                epochLoss = 0
-                for _ in range(int(ASL.size() / self.batchSize)):
-                    batch = sess.run(iterator.get_next())
-                    _, c = sess.run([optimizer, cost], feed_dict={self.x: batch[0], self.y: batch[1], self.keepProb: 0.5})
-                    epochLoss += c
-                print('Epoch ', i + 1, '/ ', self.numEpochs, ' completed - Loss=',epochLoss,'\n')
-            
-            correct_prediction = tf.equal(tf.argmax(prediction, 1), tf.argmax(self.y, 1))
-            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-            tf.train.Saver().save(sess, join(join(os.getcwd(), "PremadeNetworks"), "ASL_NN"))
+        writer = tf.summary.FileWriter(join(join(os.getcwd(), "TrainingGraphs"), "ASL_NN"), graph=tf.get_default_graph())
+
+        for i in range(self.numEpochs):
+            self.sess.run(iterator.initializer)
+            epochLoss = 0
+            for batchNum in range(int(ASL.size() / self.batchSize)):
+                batch = self.sess.run(iterator.get_next())
+                summary, _, c = self.sess.run([self.merged, self.optimizer, self.cost], feed_dict={self.x: batch[0], self.y: batch[1], self.keepProb: 0.5})
+                epochLoss += c
+                writer.add_summary(summary, i * int(ASL.size() / self.batchSize) + batchNum)
+                print('Batch ', batchNum + 1, ' / ', int(ASL.size() / self.batchSize), ' completed with loss ', c)
+            print('Epoch ', i + 1, '/ ', self.numEpochs, ' completed - Loss=',epochLoss,'\n')
+            #summary, a, c = self.sess.run([self.merged, self.accuracy, self.cost], feed_dict={self.x: batch[0], self.y: batch[1], self.keepProb: 0.5})
+            #writer.add_summary(summary, i)
+            saver.save(self.sess, join(join(os.getcwd(), "PremadeNetworks"), "ASL_NN"), global_step=ASL.size()*(i+1))
+    
+        
+        testImages, testLabels = self.sess.run(iterator.get_next())
+        print('Test accuracy %g' % accuracy.eval(feed_dict={self.x:testImages, self.y:testLabels, self.keepProb:1.0}))
+
 
 if __name__ == "__main__":
+    #nn = ConvolutionalNeuralNetwork(join(os.getcwd(), "PremadeNetworks"), "ASL_NN-18400.meta")
     nn = ConvolutionalNeuralNetwork()
     nn.train()
